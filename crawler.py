@@ -12,6 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+# 取消 selenium 注释以启用动态加载支持
+# from selenium import webdriver
+# from selenium.webdriver.chrome.options import Options
 
 # 配置日志
 logging.basicConfig(
@@ -60,14 +63,35 @@ session = requests.Session()
 retries = Retry(total=MAX_RETRIES, backoff_factor=RETRY_DELAY, status_forcelist=[500, 502, 503, 504])
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
+def login():
+    """执行登录以获取受限页面访问权限"""
+    login_url = "https://hjd2048.com/2048/login.php"  # 需确认实际登录URL
+    credentials = {
+        "username": os.getenv("USERNAME", "your_username"),  # 从环境变量获取
+        "password": os.getenv("PASSWORD", "your_password"),
+        "questionid": "0",  # 无安全问题，参考 1.html
+        "answer": ""
+    }
+    logging.info(f"尝试登录: {login_url}")
+    try:
+        response = session.post(login_url, data=credentials, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
+        if "login" not in response.text.lower() and "access denied" not in response.text.lower():
+            logging.info("登录成功")
+            return True
+        else:
+            logging.error("登录失败，可能是凭据错误或页面仍重定向")
+            return False
+    except Exception as e:
+        logging.error(f"登录失败: {e}")
+        return False
+
 def clean_title(title):
     """清洗标题，保留英文部分并去除无效字符"""
     try:
-        # 按斜杠或特殊字符分割标题
         parts = [part.strip() for part in re.split(r'[／/|]', title)]
         logging.debug(f"标题分割: 原始='{title}', 分割后={parts}")
         
-        # 选择包含字母的最长有效部分
         valid_parts = []
         for part in parts:
             match = re.match(r'[A-Za-z0-9\s.,:;!?\'\"()\-+&]+$', part)
@@ -81,7 +105,6 @@ def clean_title(title):
             logging.debug(f"清洗标题: 原始='{title}', 清洗后='{cleaned}'")
             return cleaned
         
-        # 回退：提取任何英文字符
         match = re.search(r'[A-Za-z0-9\s.,:;!?\'\"()\-+&]+', title)
         if match:
             cleaned = match.group(0).strip()
@@ -164,7 +187,6 @@ def get_magnet_links(topic_url):
         response = session.get(topic_url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
         
-        # 检查是否是登录页面
         if "login" in response.text.lower() or "access denied" in response.text.lower():
             logging.error(f"话题页面可能需要登录: {topic_url}")
             return []
@@ -172,17 +194,14 @@ def get_magnet_links(topic_url):
         soup = BeautifulSoup(response.text, 'html.parser')
         magnet_links = []
         
-        # 优先查找 <a> 标签中的磁力链接
         for a in soup.select('a[href^="magnet:?xt=urn:btih:"]'):
             magnet_links.append(a['href'])
         
-        # 备用：查找 40 字符哈希值
         content = soup.get_text()
         hash_pattern = r'[0-9a-fA-F]{40}'
         hashes = re.findall(hash_pattern, content)
         magnet_links.extend([hash_to_magnet(h) for h in hashes if hash_to_magnet(h)])
         
-        # 去重
         magnet_links = list(dict.fromkeys(magnet_links))
         
         if not magnet_links:
@@ -201,6 +220,10 @@ def get_max_page():
     try:
         response = session.get(f"{base_url}1", headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
+        
+        if "login" in response.text.lower() or "access denied" in response.text.lower():
+            logging.error("获取最大页数失败：首页需要登录")
+            return 1
         
         soup = BeautifulSoup(response.text, 'html.parser')
         page_links = soup.select('a[href*="page="]')
@@ -230,14 +253,13 @@ def crawl_page(page_number, retries=0):
         # 调试：保存页面 HTML
         with open(f"debug_page_{page_number}.html", "w", encoding="utf-8") as f:
             f.write(response.text)
-
+    
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        # 使用更灵活的选择器
-        torrent_rows = soup.select('tr[class*="tr3"]')
+        # 尝试多种选择器
+        torrent_rows = soup.select('tr.tr3.t_one') or soup.select('tr[class*="tr3"]') or soup.select('tr')
         if not torrent_rows:
-            logging.warning(f"页面 {page_number} 未找到torrent行，检查选择器 'tr[class*=\"tr3\"]'")
-            # 记录所有 <tr> 的类名
+            logging.warning(f"页面 {page_number} 未找到torrent行，尝试了多种选择器")
             tr_classes = [tr.get('class', []) for tr in soup.select('tr')]
             logging.debug(f"页面 {page_number} 的 <tr> 类名: {tr_classes}")
             return []
@@ -257,7 +279,6 @@ def crawl_page(page_number, retries=0):
                 publisher_elem = row.select_one('td.tal.y-style a.bl')
                 publisher = publisher_elem.get_text(strip=True) if publisher_elem else "Unknown"
                 
-                # 获取磁力链接
                 magnet_links = get_magnet_links(topic_url)
                 link = ";".join(magnet_links) if magnet_links else ""
                 
@@ -291,6 +312,11 @@ def crawl_pages(start_page, end_page):
     """主爬取逻辑"""
     logging.info(f"开始爬取，从页面 {start_page} 到 {end_page}")
     try:
+        # 登录
+        if not login():
+            logging.error("登录失败，退出爬取")
+            return
+        
         configure_git_lfs()
         
         if start_page == 0:
@@ -341,7 +367,7 @@ def crawl_pages(start_page, end_page):
                     logging.error(f"处理页面 {page_number} 时出错: {e}")
                     continue
                 
-                time.sleep(random.uniform(1.0, 3.0))  # 增加延迟以避免被封
+                time.sleep(random.uniform(1.0, 3.0))
         
         if total_records > 0:
             logging.info(f"最后提交剩余 {total_records} 条记录")
