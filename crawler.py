@@ -63,29 +63,6 @@ session = requests.Session()
 retries = Retry(total=MAX_RETRIES, backoff_factor=RETRY_DELAY, status_forcelist=[500, 502, 503, 504])
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
-def login():
-    """执行登录以获取受限页面访问权限"""
-    login_url = "https://hjd2048.com/2048/login.php"  # 需确认实际登录URL
-    credentials = {
-        "username": os.getenv("USERNAME", "your_username"),  # 从环境变量获取
-        "password": os.getenv("PASSWORD", "your_password"),
-        "questionid": "0",  # 无安全问题，参考 1.html
-        "answer": ""
-    }
-    logging.info(f"尝试登录: {login_url}")
-    try:
-        response = session.post(login_url, data=credentials, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        if "login" not in response.text.lower() and "access denied" not in response.text.lower():
-            logging.info("登录成功")
-            return True
-        else:
-            logging.error("登录失败，可能是凭据错误或页面仍重定向")
-            return False
-    except Exception as e:
-        logging.error(f"登录失败: {e}")
-        return False
-
 def clean_title(title):
     """清洗标题，保留英文部分并去除无效字符"""
     try:
@@ -174,41 +151,43 @@ def get_topic_id(url):
 def hash_to_magnet(hash_value):
     """将哈希值转换为磁力链接"""
     if hash_value and re.match(r'^[0-9a-fA-F]{40}$', hash_value):
-        magnet = f"magnet:?xt=urn:btih:{hash_value}"
+        magnet = f"magnet:?xt=urn:btih:{hash_value.lower()}"
         logging.debug(f"转换哈希到磁力链接: {hash_value} -> {magnet}")
         return magnet
     logging.warning(f"无效哈希值: {hash_value}")
     return ""
 
 def get_magnet_links(topic_url):
-    """从话题页面提取磁力链接"""
+    """从话题页面提取磁力链接，并去重"""
     logging.debug(f"获取磁力链接: {topic_url}")
     try:
         response = session.get(topic_url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
         
-        if "login" in response.text.lower() or "access denied" in response.text.lower():
-            logging.error(f"话题页面可能需要登录: {topic_url}")
-            return []
-        
         soup = BeautifulSoup(response.text, 'html.parser')
-        magnet_links = []
+        magnet_links = set()
         
+        # 提取 <a> 标签中的磁力链接
         for a in soup.select('a[href^="magnet:?xt=urn:btih:"]'):
-            magnet_links.append(a['href'])
+            magnet = a['href'].split('&')[0].lower()  # 规范化：小写，移除参数
+            magnet_links.add(magnet)
         
+        # 提取 40 字符哈希值
         content = soup.get_text()
         hash_pattern = r'[0-9a-fA-F]{40}'
         hashes = re.findall(hash_pattern, content)
-        magnet_links.extend([hash_to_magnet(h) for h in hashes if hash_to_magnet(h)])
+        for h in hashes:
+            magnet = hash_to_magnet(h)
+            if magnet:
+                magnet_links.add(magnet)
         
-        magnet_links = list(dict.fromkeys(magnet_links))
+        magnet_links = list(magnet_links)
         
         if not magnet_links:
             logging.warning(f"未找到磁力链接或哈希值: {topic_url}")
             return []
         
-        logging.debug(f"在 {topic_url} 找到 {len(magnet_links)} 个磁力链接")
+        logging.debug(f"在 {topic_url} 找到 {len(magnet_links)} 个唯一磁力链接")
         return magnet_links
     except Exception as e:
         logging.error(f"获取磁力链接失败: {topic_url}, 错误: {e}")
@@ -220,10 +199,6 @@ def get_max_page():
     try:
         response = session.get(f"{base_url}1", headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
-        
-        if "login" in response.text.lower() or "access denied" in response.text.lower():
-            logging.error("获取最大页数失败：首页需要登录")
-            return 1
         
         soup = BeautifulSoup(response.text, 'html.parser')
         page_links = soup.select('a[href*="page="]')
@@ -253,7 +228,6 @@ def crawl_page(page_number, retries=0):
         # 调试：保存页面 HTML
         with open(f"debug_page_{page_number}.html", "w", encoding="utf-8") as f:
             f.write(response.text)
-    
         
         soup = BeautifulSoup(response.text, 'html.parser')
         # 尝试多种选择器
@@ -312,11 +286,6 @@ def crawl_pages(start_page, end_page):
     """主爬取逻辑"""
     logging.info(f"开始爬取，从页面 {start_page} 到 {end_page}")
     try:
-        # 登录
-        if not login():
-            logging.error("登录失败，退出爬取")
-            return
-        
         configure_git_lfs()
         
         if start_page == 0:
