@@ -1,0 +1,77 @@
+name: Crawl HJD2048 Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      forum_url:
+        description: 'Forum URL (e.g., https://hjd2048.com/2048/thread.php?fid=3)'
+        required: true
+        default: 'https://hjd2048.com/2048/thread.php?fid=3'
+      start_page:
+        description: 'Start page number (e.g., 926)'
+        required: true
+        default: '926'
+      end_page:
+        description: 'End page number (e.g., 1)'
+        required: true
+        default: '1'
+
+permissions:
+  contents: write  # Grant write permissions for committing files
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 tqdm
+
+      - name: Install Git LFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install git-lfs
+          git lfs install
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "pikapk3069"
+          git config --global user.email "pikapk3069@outlook.com"
+
+      - name: Extract fid and set CSV filename
+        id: extract
+        run: |
+          FORUM_URL="${{ github.event.inputs.forum_url }}"
+          FID=$(echo "$FORUM_URL" | sed -E 's|.*fid=([0-9]+).*$|\1|')
+          CSV_FILE="fid_$FID.csv"
+          echo "FID=$FID" >> $GITHUB_ENV
+          echo "CSV_FILE=$CSV_FILE" >> $GITHUB_ENV
+          echo "Extracted FID=$FID, CSV_FILE=$CSV_FILE"
+
+      - name: Run crawler
+        env:
+          FORUM_URL: ${{ github.event.inputs.forum_url }}
+          START_PAGE: ${{ github.event.inputs.start_page }}
+          END_PAGE: ${{ github.event.inputs.end_page }}
+          FID: ${{ env.FID }}
+          CSV_FILE: ${{ env.CSV_FILE }}
+        run: |
+          python crawler.py
+
+      - name: Commit and push changes
+        if: always()  # Attempt to commit regardless of crawler success
+        env:
+          CSV_FILE: ${{ env.CSV_FILE }}
+        run: |
+          git add "$CSV_FILE"
+          git commit -m "Final commit after crawl for fid=${{ env.FID }}" || echo "No changes to commit"
+          git push || echo "Push failed, possibly no changes or permission issue"
