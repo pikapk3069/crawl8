@@ -7,14 +7,13 @@ import logging
 import time
 import random
 import re
-import hashlib
 from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Configure logging
+# 配置日志
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -24,7 +23,7 @@ logging.basicConfig(
     ]
 )
 
-# Environment variables
+# 环境变量
 forum_url = os.getenv("FORUM_URL", "https://hjd2048.com/2048/thread.php?fid=3")
 fid = os.getenv("FID", "3")
 csv_file = os.getenv("CSV_FILE", f"fid_{fid}.csv")
@@ -35,7 +34,7 @@ COMMIT_INTERVAL = 500
 TIMEOUT = 10
 MAX_WORKERS = 5
 
-# Request headers
+# 请求头
 headers = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -56,19 +55,19 @@ headers = {
     "Referer": "https://hjd2048.com/"
 }
 
-# Configure session with retries
+# 配置会话，带重试机制
 session = requests.Session()
 retries = Retry(total=MAX_RETRIES, backoff_factor=RETRY_DELAY, status_forcelist=[500, 502, 503, 504])
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
 def clean_title(title):
-    """Clean title to retain English parts and remove unwanted characters."""
+    """清洗标题，保留英文部分并去除无效字符"""
     try:
-        # Split by special characters and keep meaningful parts
+        # 按斜杠或特殊字符分割标题
         parts = [part.strip() for part in re.split(r'[／/|]', title)]
-        logging.debug(f"Title split: original='{title}', parts={parts}")
+        logging.debug(f"标题分割: 原始='{title}', 分割后={parts}")
         
-        # Select parts with English letters, numbers, or common punctuation
+        # 选择包含字母的最长有效部分
         valid_parts = []
         for part in parts:
             match = re.match(r'[A-Za-z0-9\s.,:;!?\'\"()\-+&]+$', part)
@@ -79,112 +78,126 @@ def clean_title(title):
         
         if valid_parts:
             cleaned = max(valid_parts, key=len)
-            logging.debug(f"Cleaned title: original='{title}', cleaned='{cleaned}'")
+            logging.debug(f"清洗标题: 原始='{title}', 清洗后='{cleaned}'")
             return cleaned
         
-        # Fallback: extract any English-like part
+        # 回退：提取任何英文字符
         match = re.search(r'[A-Za-z0-9\s.,:;!?\'\"()\-+&]+', title)
         if match:
             cleaned = match.group(0).strip()
             if len(cleaned) > 3 and not re.match(r'^(720p|1080p|4K)$', cleaned, re.I):
-                logging.debug(f"Fallback cleaning: original='{title}', cleaned='{cleaned}'")
+                logging.debug(f"回退清洗: 原始='{title}', 清洗后='{cleaned}'")
                 return cleaned
         
-        logging.warning(f"No valid English part in title, keeping original: {title}")
+        logging.warning(f"标题无有效英文部分，保留原始: {title}")
         return title
     except Exception as e:
-        logging.error(f"Failed to clean title: {title}, error: {e}")
+        logging.error(f"清洗标题失败: {title}, 错误: {e}")
         return title
 
 def init_csv():
-    """Initialize CSV file if it doesn't exist."""
+    """初始化CSV文件，仅当文件不存在时创建"""
     try:
         if not os.path.exists(csv_file):
             with open(csv_file, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(["Page", "Title", "URL", "Publisher", "Link"])
-            logging.info(f"Created CSV file: {csv_file}")
+            logging.info(f"新建CSV文件: {csv_file}")
         else:
             file_size = os.path.getsize(csv_file)
             with open(csv_file, 'r', encoding='utf-8') as file:
                 line_count = sum(1 for line in file)
-            logging.info(f"CSV file exists: {csv_file}, size: {file_size} bytes, lines: {line_count}")
+            logging.info(f"CSV文件已存在: {csv_file}, 大小: {file_size}字节, 行数: {line_count}")
     except Exception as e:
-        logging.error(f"Failed to initialize CSV: {e}")
+        logging.error(f"初始化CSV文件失败: {e}")
         raise
 
 def configure_git_lfs():
-    """Configure Git LFS tracking."""
+    """配置Git LFS跟踪"""
     try:
         result = subprocess.run(["git", "lfs", "track", csv_file], check=True, capture_output=True, text=True)
-        logging.debug(f"Git LFS configured: {result.stdout}")
+        logging.debug(f"Git LFS配置成功: {result.stdout}")
     except subprocess.CalledProcessError as e:
-        logging.error(f"Git LFS configuration failed: {e.stderr}")
+        logging.error(f"Git LFS配置失败: {e.stderr}")
         raise
 
 def git_commit(message):
-    """Commit CSV file to Git repository."""
-    logging.info(f"Preparing to commit: {message}")
+    """提交CSV文件到Git仓库"""
+    logging.info(f"准备提交: {message}")
     try:
         result_add = subprocess.run(["git", "add", csv_file], capture_output=True, text=True, check=True)
-        logging.debug(f"Git add output: {result_add.stdout}, error: {result_add.stderr}")
+        logging.debug(f"Git add 输出: {result_add.stdout}, 错误: {result_add.stderr}")
         
         result_commit = subprocess.run(["git", "commit", "-m", message], capture_output=True, text=True)
-        logging.debug(f"Git commit output: {result_commit.stdout}, error: {result_commit.stderr}")
+        logging.debug(f"Git commit 输出: {result_commit.stdout}, 错误: {result_commit.stderr}")
         
         if result_commit.returncode == 0:
             result_push = subprocess.run(["git", "push"], capture_output=True, text=True, check=True)
-            logging.info(f"Git commit successful: {message}")
-            logging.debug(f"Git push output: {result_push.stdout}, error: {result_push.stderr}")
+            logging.info(f"Git提交成功: {message}")
+            logging.debug(f"Git push 输出: {result_push.stdout}, 错误: {result_push.stderr}")
         else:
-            logging.warning(f"No changes to commit: {result_commit.stderr}")
+            logging.warning(f"无更改需要提交: {result_commit.stderr}")
     except subprocess.CalledProcessError as e:
-        logging.error(f"Git operation failed: {e.stderr}")
+        logging.error(f"Git操作失败: {e.stderr}")
         raise
 
 def get_topic_id(url):
-    """Extract topic ID from URL."""
+    """从URL提取话题ID"""
     match = re.search(r'tid=(\d+)', url)
     topic_id = match.group(1) if match else None
-    logging.debug(f"Extracted topic ID: URL={url}, ID={topic_id}")
+    logging.debug(f"提取话题ID: URL={url}, ID={topic_id}")
     return topic_id
 
 def hash_to_magnet(hash_value):
-    """Convert hash to magnet link."""
+    """将哈希值转换为磁力链接"""
     if hash_value and re.match(r'^[0-9a-fA-F]{40}$', hash_value):
         magnet = f"magnet:?xt=urn:btih:{hash_value}"
-        logging.debug(f"Converted hash to magnet: {hash_value} -> {magnet}")
+        logging.debug(f"转换哈希到磁力链接: {hash_value} -> {magnet}")
         return magnet
-    logging.warning(f"Invalid hash value: {hash_value}")
+    logging.warning(f"无效哈希值: {hash_value}")
     return ""
 
 def get_magnet_links(topic_url):
-    """Fetch magnet links from topic page."""
-    logging.debug(f"Fetching magnet links from: {topic_url}")
+    """从话题页面提取磁力链接"""
+    logging.debug(f"获取磁力链接: {topic_url}")
     try:
         response = session.get(topic_url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
         
+        # 检查是否是登录页面
+        if "login" in response.text.lower() or "access denied" in response.text.lower():
+            logging.error(f"话题页面可能需要登录: {topic_url}")
+            return []
+        
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Look for hash values in the page (assuming they are in plain text or specific elements)
+        magnet_links = []
+        
+        # 优先查找 <a> 标签中的磁力链接
+        for a in soup.select('a[href^="magnet:?xt=urn:btih:"]'):
+            magnet_links.append(a['href'])
+        
+        # 备用：查找 40 字符哈希值
         content = soup.get_text()
         hash_pattern = r'[0-9a-fA-F]{40}'
         hashes = re.findall(hash_pattern, content)
+        magnet_links.extend([hash_to_magnet(h) for h in hashes if hash_to_magnet(h)])
         
-        if not hashes:
-            logging.warning(f"No hash values found in topic: {topic_url}")
+        # 去重
+        magnet_links = list(dict.fromkeys(magnet_links))
+        
+        if not magnet_links:
+            logging.warning(f"未找到磁力链接或哈希值: {topic_url}")
             return []
         
-        magnet_links = [hash_to_magnet(h) for h in hashes if hash_to_magnet(h)]
-        logging.debug(f"Found {len(magnet_links)} magnet links in {topic_url}")
+        logging.debug(f"在 {topic_url} 找到 {len(magnet_links)} 个磁力链接")
         return magnet_links
     except Exception as e:
-        logging.error(f"Failed to fetch magnet links from {topic_url}: {e}")
+        logging.error(f"获取磁力链接失败: {topic_url}, 错误: {e}")
         return []
 
 def get_max_page():
-    """Extract maximum page number from forum page."""
-    logging.info(f"Getting max page number from: {base_url}1")
+    """从论坛首页提取最大页数"""
+    logging.info(f"获取最大页数: {base_url}1")
     try:
         response = session.get(f"{base_url}1", headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
@@ -199,25 +212,34 @@ def get_max_page():
                 page_num = int(match.group(1))
                 max_page = max(max_page, page_num)
         
-        logging.info(f"Extracted max page: {max_page}")
+        logging.info(f"提取到最大页数: {max_page}")
         return max_page
     except Exception as e:
-        logging.error(f"Failed to get max page: {e}")
-        logging.warning("Defaulting to page=1")
+        logging.error(f"提取最大页数失败: {e}")
+        logging.warning("默认使用页数=1")
         return 1
 
 def crawl_page(page_number, retries=0):
-    """Crawl a single page."""
+    """爬取单页数据"""
     try:
         url = f"{base_url}{page_number}"
-        logging.info(f"Crawling page {page_number}: {url}")
+        logging.info(f"爬取页面 {page_number}: {url}")
         response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
         
+        # 调试：保存页面 HTML
+        with open(f"debug_page_{page_number}.html", "w", encoding="utf-8") as f:
+            f.write(response.text)
+
+        
         soup = BeautifulSoup(response.text, 'html.parser')
-        torrent_rows = soup.select('tr.tr3.t_one')
+        # 使用更灵活的选择器
+        torrent_rows = soup.select('tr[class*="tr3"]')
         if not torrent_rows:
-            logging.warning(f"No torrent rows found on page {page_number}, check selector 'tr.tr3.t_one'")
+            logging.warning(f"页面 {page_number} 未找到torrent行，检查选择器 'tr[class*=\"tr3\"]'")
+            # 记录所有 <tr> 的类名
+            tr_classes = [tr.get('class', []) for tr in soup.select('tr')]
+            logging.debug(f"页面 {page_number} 的 <tr> 类名: {tr_classes}")
             return []
         
         results = []
@@ -225,7 +247,7 @@ def crawl_page(page_number, retries=0):
             try:
                 title_elem = row.select_one('a.subject')
                 if not title_elem:
-                    logging.debug(f"Page {page_number} row missing title element, skipping")
+                    logging.debug(f"页面 {page_number} 的行缺少标题元素，跳过")
                     continue
                 raw_title = title_elem.get_text(strip=True)
                 title = clean_title(raw_title)
@@ -235,7 +257,7 @@ def crawl_page(page_number, retries=0):
                 publisher_elem = row.select_one('td.tal.y-style a.bl')
                 publisher = publisher_elem.get_text(strip=True) if publisher_elem else "Unknown"
                 
-                # Fetch magnet links from topic page
+                # 获取磁力链接
                 magnet_links = get_magnet_links(topic_url)
                 link = ";".join(magnet_links) if magnet_links else ""
                 
@@ -247,53 +269,53 @@ def crawl_page(page_number, retries=0):
                     "Link": link
                 }
                 results.append(result)
-                logging.debug(f"Page {page_number} added record: {title}")
+                logging.debug(f"页面 {page_number} 添加记录: {title}")
                 
             except Exception as e:
-                logging.error(f"Error processing row on page {page_number}: {e}")
+                logging.error(f"处理页面 {page_number} 的行时出错: {e}")
                 continue
         
-        logging.info(f"Page {page_number}: Found {len(results)} records")
+        logging.info(f"页面 {page_number}: 找到 {len(results)} 条记录")
         return results
     
     except requests.RequestException as e:
         if retries < MAX_RETRIES:
             delay = RETRY_DELAY * (2 ** retries)
-            logging.warning(f"Retrying page {page_number} {retries + 1}/{MAX_RETRIES}, waiting {delay}s: {e}")
+            logging.warning(f"页面 {page_number} 重试 {retries + 1}/{MAX_RETRIES}，等待 {delay}秒: {e}")
             time.sleep(delay)
             return crawl_page(page_number, retries + 1)
-        logging.error(f"Failed to crawl page {page_number} after {MAX_RETRIES} retries: {e}")
+        logging.error(f"爬取页面 {page_number} 失败，尝试 {MAX_RETRIES} 次: {e}")
         return []
 
 def crawl_pages(start_page, end_page):
-    """Main crawling logic."""
-    logging.info(f"Starting crawl from page {start_page} to {end_page}")
+    """主爬取逻辑"""
+    logging.info(f"开始爬取，从页面 {start_page} 到 {end_page}")
     try:
         configure_git_lfs()
         
         if start_page == 0:
-            logging.info("start_page is 0, clearing CSV and fetching max page")
+            logging.info("start_page为0，清空CSV并提取最大页数")
             with open(csv_file, mode='w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 writer.writerow(["Page", "Title", "URL", "Publisher", "Link"])
-            logging.info(f"Cleared CSV file: {csv_file}")
+            logging.info(f"已清空CSV文件: {csv_file}")
             start_page = get_max_page()
-            logging.info(f"Set start_page to {start_page}")
+            logging.info(f"设置start_page为 {start_page}")
         
         init_csv()
         
         total_records = 0
         pages = list(range(start_page, end_page - 1, -1))
-        logging.debug(f"Page list: {pages}")
+        logging.debug(f"页面列表: {pages}")
         
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_page = {executor.submit(crawl_page, page): page for page in pages}
             
-            for future in tqdm(future_to_page, desc="Crawling pages", total=len(pages)):
+            for future in tqdm(future_to_page, desc="爬取页面", total=len(pages)):
                 page_number = future_to_page[future]
                 try:
                     results = future.result()
-                    logging.debug(f"Page {page_number} returned {len(results)} records")
+                    logging.debug(f"页面 {page_number} 返回 {len(results)} 条记录")
                     if results:
                         try:
                             with open(csv_file, mode='a', newline='', encoding='utf-8') as file:
@@ -302,52 +324,52 @@ def crawl_pages(start_page, end_page):
                                     writer.writerow([data["Page"], data["Title"], data["URL"], 
                                                   data["Publisher"], data["Link"]])
                                     total_records += 1
-                                logging.info(f"Page {page_number}: Wrote {len(results)} records to {csv_file}")
+                                logging.info(f"页面 {page_number}: 写入 {len(results)} 条记录到 {csv_file}")
                         except Exception as e:
-                            logging.error(f"Failed to write CSV for page {page_number}: {e}")
+                            logging.error(f"写入CSV失败，页面 {page_number}: {e}")
                             continue
                     else:
-                        logging.warning(f"Page {page_number}: No data written, empty results")
+                        logging.warning(f"页面 {page_number}: 无数据写入，记录为空")
                     
-                    logging.debug(f"Current total records: {total_records}")
+                    logging.debug(f"当前累计记录数: {total_records}")
                     if total_records >= COMMIT_INTERVAL:
-                        logging.info(f"Reached commit interval {COMMIT_INTERVAL}, committing")
-                        git_commit(f"Updated {total_records} records up to page {page_number}")
+                        logging.info(f"达到提交间隔 {COMMIT_INTERVAL}，提交记录")
+                        git_commit(f"更新 {total_records} 条记录至页面 {page_number}")
                         total_records = 0
                             
                 except Exception as e:
-                    logging.error(f"Error processing page {page_number}: {e}")
+                    logging.error(f"处理页面 {page_number} 时出错: {e}")
                     continue
                 
-                time.sleep(random.uniform(0.5, 1.5))
+                time.sleep(random.uniform(1.0, 3.0))  # 增加延迟以避免被封
         
         if total_records > 0:
-            logging.info(f"Final commit for {total_records} remaining records")
-            git_commit(f"Final update for {total_records} records")
+            logging.info(f"最后提交剩余 {total_records} 条记录")
+            git_commit(f"最后更新剩余 {total_records} 条记录")
         
         file_size = os.path.getsize(csv_file)
         with open(csv_file, 'r', encoding='utf-8') as file:
             line_count = sum(1 for line in file)
-        logging.info(f"Final CSV status: {csv_file}, size: {file_size} bytes, lines: {line_count}")
+        logging.info(f"最终CSV状态: {csv_file}, 大小: {file_size}字节, 行数: {line_count}")
     
     except Exception as e:
-        logging.error(f"Unexpected error in crawl_pages: {e}")
+        logging.error(f"crawl_pages 中发生未预期错误: {e}")
         raise
     finally:
-        logging.info("Crawl process completed")
+        logging.info("完成爬取流程")
 
 if __name__ == "__main__":
-    logging.info("Script started")
+    logging.info("脚本启动")
     try:
         session.get("https://hjd2048.com/2048/", headers=headers, timeout=TIMEOUT)
-        logging.info("Session initialized")
+        logging.info("已初始化会话")
     except requests.RequestException as e:
-        logging.warning(f"Failed to initialize session: {e}")
+        logging.warning(f"初始化会话失败: {e}")
     
     start_page = int(os.getenv("START_PAGE", 926))
     end_page = int(os.getenv("END_PAGE", 1))
-    logging.info(f"Starting crawl for fid={fid}, from page {start_page} to {end_page}")
+    logging.info(f"开始爬取论坛 fid={fid}，从页面 {start_page} 到 {end_page}")
     crawl_pages(start_page, end_page)
-    logging.info(f"Data saved to {csv_file}")
+    logging.info(f"数据已保存至 {csv_file}")
     session.close()
-    logging.info("Script ended")
+    logging.info("脚本结束")
